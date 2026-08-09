@@ -1,0 +1,126 @@
+# Plano de Otimização de Desempenho: VMware Workstation em Host HDD
+
+**Configurações realizadas por Sr. Rosa**
+
+## Índice
+1. [Descrição do Problema](#1-descrição-do-problema)
+2. [Solução e Justificativa](#2-solução-e-justificativa)
+3. [Passo 1: VBS e Isolamento de Núcleo (Host)](#3-passo-1-vbs-e-isolamento-de-núcleo-host)
+4. [Passo 2: Recursos de Virtualização do Windows (Host)](#4-passo-2-recursos-de-virtualização-do-windows-host)
+5. [Passo 3: Preferências de Memória do VMware (Host)](#5-passo-3-preferências-de-memória-do-vmware-host)
+6. [Passo 4: Alocação de Hardware da VM (Guest)](#6-passo-4-alocação-de-hardware-da-vm-guest)
+7. [Passo 5: Parâmetros do Arquivo .vmx](#7-passo-5-parâmetros-do-arquivo-vmx)
+8. [Passo 6: Serviços e Paginação do Windows 10 (Guest)](#8-passo-6-serviços-e-paginação-do-windows-10-guest)
+9. [Passo 7: Manutenção do Disco Virtual](#9-passo-7-manutenção-do-disco-virtual)
+
+---
+
+## 1. Descrição do Problema
+A máquina virtual executando Windows 10 no VMware Workstation estava apresentando lentidão severa, engasgos e uso de disco atingindo 100%. O ambiente hospedeiro (Windows 11) possui 36 GB de RAM e um processador AMD Ryzen 7 3700U, porém a máquina virtual está alocada em um disco mecânico (HDD), o que cria um gargalo físico de leitura e gravação.
+
+## 2. Solução e Justificativa
+A solução consistiu em isolar a máquina virtual do uso de disco mecânico o máximo possível, forçando-a a utilizar a alta disponibilidade de memória RAM (36 GB) para todas as operações temporárias e desativando recursos do sistema hospedeiro e convidado que geram concorrência de I/O e processamento.
+
+**Justificativa:** HDDs mecânicos sofrem com alta latência em operações de busca (seek time). Ao eliminar a paginação (swap) tanto no nível do VMware quanto no nível do Windows 10, e ao desativar serviços de indexação, reduzimos drasticamente as requisições ao disco. Adicionalmente, desativar o hypervisor nativo do Windows 11 garante que o VMware tenha acesso direto às instruções de virtualização do processador, melhorando o desempenho geral.
+
+---
+
+## 3. Passo 1: VBS e Isolamento de Núcleo (Host)
+
+| Parâmetro | Como estava | Como ficou |
+| :--- | :--- | :--- |
+| Isolamento de Núcleo | Ativado (provável) | Desativado |
+| VBS (Virtualization-Based Security) | Em execução | Não habilitado |
+
+> **Atalhos e Comandos:**
+> - Para verificar o status do VBS: `Windows + R`, digitar `msinfo32`.
+> - Para desativar o VBS via terminal: Pressionar `Windows`, digitar `cmd`, selecionar "Executar como administrador" e rodar o comando: `bcdedit /set hypervisorlaunchtype off`
+
+**O que faz:** O VBS e o Isolamento de Núcleo utilizam o hypervisor nativo do Windows para criar zonas seguras de memória. Isso entra em conflito com o motor do VMware, causando quedas severas de desempenho.
+
+---
+
+## 4. Passo 2: Recursos de Virtualização do Windows (Host)
+
+| Parâmetro | Como estava | Como ficou |
+| :--- | :--- | :--- |
+| Plataforma de Máquina Virtual / Hipervisor | Ativados (Marcados) | Desativados (Desmarcados) |
+
+> **Atalhos e Comandos:**
+> - Para abrir os recursos: Pressionar a tecla `Windows`, digitar `Recursos do Windows` e selecionar "Ativar ou desativar recursos do Windows".
+
+**O que faz:** Esses recursos ativam o hypervisor do Windows (Hyper-V backend). Desativá-los devolve a exclusividade da virtualização via hardware para o VMware Workstation.
+
+---
+
+## 5. Passo 3: Preferências de Memória do VMware (Host)
+
+| Parâmetro | Como estava | Como ficou |
+| :--- | :--- | :--- |
+| Additional memory | Permitia swap em disco | "Fit all virtual machine memory into reserved host RAM" |
+
+> **Atalhos e Comandos:**
+> - Na interface do VMware Workstation: Clicar em `Edit` > `Preferences...` > `Memory`.
+
+**O que faz:** Impede que o VMware utilize o HDD físico do hospedeiro como memória virtual (arquivo de paginação do próprio VMware), forçando o uso exclusivo da RAM física do sistema.
+
+---
+
+## 6. Passo 4: Alocação de Hardware da VM (Guest)
+
+| Parâmetro | Como estava | Como ficou |
+| :--- | :--- | :--- |
+| Memória RAM | 21.1 GB | 24 GB (24576 MB) |
+| Processadores / Núcleos | Padrão | 1 Processador / 4 Núcleos |
+
+> **Atalhos e Comandos:**
+> - Na interface do VMware com a VM desligada: Clicar em `Edit virtual machine settings`.
+
+**O que faz:** 24 GB é um múltiplo otimizado para endereçamento de memória. Os 4 núcleos dividem a carga de processamento de forma simétrica.
+
+---
+
+## 7. Passo 5: Parâmetros do Arquivo .vmx
+
+| Parâmetro | Como estava | Como ficou |
+| :--- | :--- | :--- |
+| Disable memory page trimming | Desativado | Ativado (TRUE) |
+| mainMem.useNamedFile | Ausente | "FALSE" |
+
+> **Atalhos e Comandos:**
+> - Pela interface: `Edit virtual machine settings` > Aba `Options` > `Advanced` > Marcar "Disable memory page trimming".
+> - Pelo arquivo: Abrir o arquivo `Windows 10 x64.vmx` (Tamanho: 5 KB, Tipo: VMware virtual machine configuration) com o `Bloco de Notas` e verificar/inserir a linha `mainMem.useNamedFile = "FALSE"`.
+
+**O que faz:** Evita a criação do arquivo de backup de memória `.vmem` no disco físico enquanto a VM está ligada e impede que o VMware tente devolver páginas de memória não utilizadas ao host, poupando ciclos de I/O no HDD.
+
+---
+
+## 8. Passo 6: Serviços e Paginação do Windows 10 (Guest)
+
+| Parâmetro | Como estava | Como ficou |
+| :--- | :--- | :--- |
+| Serviço SysMain | Em execução | Desativado |
+| Windows Search | Em execução | Desativado |
+| Telemetria do Windows | Em execução | Desativado |
+| Arquivo de Paginação (pagefile.sys) | Gerenciado pelo Sistema | Sem arquivo de paginação |
+| Plano de Energia | Equilibrado | Alto Desempenho |
+
+> **Atalhos e Comandos:**
+> - Para gerenciar Serviços (SysMain, Search, Telemetria): `Windows + R`, digitar `services.msc`.
+> - Para remover Arquivo de Paginação: `Windows + R`, digitar `sysdm.cpl` (Avançado > Desempenho: Configurações > Avançado > Memória virtual: Alterar).
+> - Para alterar Plano de Energia: Pressionar `Windows`, digitar `Escolher um plano de energia`.
+
+**O que faz:** O SysMain e o Search sobrecarregam HDDs com leitura e indexação em segundo plano. Remover a paginação do Windows 10 elimina o uso do disco para simulação de memória. O plano de energia garante clock máximo no processador virtual.
+
+---
+
+## 9. Passo 7: Manutenção do Disco Virtual
+
+| Parâmetro | Como estava | Como ficou |
+| :--- | :--- | :--- |
+| Estado do arquivo .vmdk | Fragmentado e com espaços vazios | Desfragmentado e Compactado |
+
+> **Atalhos e Comandos:**
+> - No VMware com a VM desligada: `Edit virtual machine settings` > Aba `Hardware` > selecionar `Hard Disk` > Clicar nos botões `Defragment` e depois `Compact`.
+
+**O que faz:** A desfragmentação reorganiza fisicamente os blocos do disco virtual no HDD do hospedeiro. O *Compact* encolhe o arquivo .vmdk, eliminando os espaços em branco deixados por arquivos apagados. Juntos, reduzem a distância física que a agulha do HDD precisa percorrer, mitigando os picos de 100% de uso.
